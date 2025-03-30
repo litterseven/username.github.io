@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>热力图操作修复版</title>
+  <style>
+    :root {
+      --cell-size: 18vw;
+      --gap: 2vw;
+    }
+
+    body {
+      margin: 0;
+      padding: 10px;
+      font-family: Arial, sans-serif;
+      background-color: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      flex: 1;
+      overflow: auto;
+      justify-content: flex-start;
+    }
+
+    #heatmap {
+      display: grid;
+      grid-template-columns: repeat(5, var(--cell-size));
+      grid-template-rows: repeat(4, var(--cell-size));
+      grid-gap: var(--gap);
+      width: 100%;
+      max-width: 90vw;
+      height: auto;
+      max-height: 60vh;
+      margin-top: 20px;
+      position: relative;
+      border: 2px solid #ccc;
+      background-color: #fff;
+      overflow: auto;
+    }
+
+    .cell {
+      width: var(--cell-size);
+      height: var(--cell-size);
+      border: 1px solid #ddd;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-color: #f5f5f5;
+      transition: background-color 0.3s;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .cell.highlight {
+      background-color: #ff6347; /* 番茄红颜色 */
+    }
+
+    .cell .product-preview {
+      font-size: 10px;
+      color: #333;
+      position: absolute;
+      bottom: 5px;
+      left: 5px;
+      background-color: rgba(255, 255, 255, 0.7);
+      padding: 2px;
+      border-radius: 3px;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 20px;
+      justify-content: center;
+      width: 100%;
+      padding: 0 10px;
+    }
+
+    input, button {
+      padding: 5px 10px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+
+    button {
+      cursor: pointer;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+    }
+
+    button:hover {
+      background-color: #45a049;
+    }
+
+    #search {
+      width: 200px;
+    }
+
+    .log {
+      font-size: 12px;
+      color: gray;
+      margin-top: 20px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      height: 150px;
+      overflow-y: auto;
+      width: 100%;
+      max-width: 90vw;
+      background-color: #fff;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div id="heatmap"></div>
+
+    <div class="controls">
+      <input type="text" id="region" placeholder="输入区域编号">
+      <input type="text" id="item" placeholder="输入物品名称">
+      <button id="saveBtn">保存物品</button>
+      <input type="text" id="search" placeholder="搜索多个物品（用逗号分隔）">
+      <button id="searchBtn">智能搜索</button>
+    </div>
+
+    <div class="log" id="operationLog"></div>
+  </div>
+
+  <script>
+    const operationLog = [];
+    const MAX_LOG = 50;
+
+    class HeatmapSystem {
+      constructor() {
+        this.heatmapData = this.loadData();
+        this.initDOM();
+        this.bindEvents();
+        this.log('系统初始化完成');
+      }
+
+      initDOM() {
+        this.renderHeatmap();
+      }
+
+      bindEvents() {
+        document.getElementById('heatmap').addEventListener('dblclick', (e) => {
+          const cell = e.target.closest('.cell');
+          if (cell) this.handleEditCodes(cell.dataset.index);
+        });
+
+        document.getElementById('saveBtn').addEventListener('click', () => this.saveItem());
+        document.getElementById('searchBtn').addEventListener('click', () => this.multiSearch());
+
+        document.getElementById('region').addEventListener('input', (e) => {
+          this.showSuggestions(e.target.value);
+        });
+      }
+
+      handleEditCodes(index) {
+        try {
+          this.log(`开始编辑区域 ${index}`);
+          const newCodes = prompt('请输入区域编号（多个用逗号分隔）:',
+            this.heatmapData[index].codes.join(','));
+
+          if (!newCodes) {
+            this.log('用户取消编辑');
+            return;
+          }
+
+          const codes = this.processCodes(newCodes, index);
+          this.updateCodes(index, codes);
+          this.log(`区域 ${index} 编号更新为: ${codes.join(',')}`);
+
+        } catch (error) {
+          this.showError('编辑编号失败', error);
+        }
+      }
+
+      processCodes(rawCodes, currentIndex) {
+        const codes = [...new Set(rawCodes.split(',').map(c => c.trim()).filter(Boolean))];
+
+        if (!codes.every(c => /^[\w\u4e00-\u9fa5-]+$/.test(c))) {
+          throw new Error('包含非法字符');
+        }
+
+        const allCodes = this.heatmapData.flatMap((r, i) =>
+          i === currentIndex ? [] : r.codes
+        );
+        const duplicates = codes.filter(c => allCodes.includes(c));
+
+        if (duplicates.length > 0) {
+          throw new Error(`编号冲突: ${duplicates.join(', ')}`);
+        }
+
+        return codes;
+      }
+
+      saveItem() {
+        try {
+          this.log('开始保存物品');
+          const codeInput = document.getElementById('region').value.trim();
+          const item = document.getElementById('item').value.trim();
+
+          if (!this.validateInput(codeInput, item)) return;
+
+          const target = this.findRegion(codeInput);
+          if (!target) return;
+
+          target.items.push(item.substring(0, 20));
+          this.updateColor(target.id);
+          this.saveToStorage();
+          this.clearInputs();
+          this.log(`成功保存物品到区域 ${target.id}`);
+
+        } catch (error) {
+          this.showError('保存物品失败', error);
+        }
+      }
+
+      multiSearch() {
+        try {
+          const searchTerm = document.getElementById('search').value.trim();
+          const items = searchTerm.split(',').map(term => term.trim());
+          const results = this.heatmapData.filter(region =>
+            region.items.some(item => items.includes(item))
+          );
+
+          this.log(`搜索结果: ${results.length} 区域匹配`);
+          this.highlightRegions(results);
+          if (results.length > 0) {
+            alert('找到匹配的区域');
+          }
+
+        } catch (error) {
+          this.showError('搜索失败', error);
+        }
+      }
+
+      highlightRegions(results) {
+        const allCells = document.querySelectorAll('.cell');
+
+        // 清除所有高亮
+        allCells.forEach(cell => {
+          cell.classList.remove('highlight');
+          cell.style.backgroundColor = '#f5f5f5'; // 恢复原始颜色
+        });
+
+        // 对匹配的区域应用高亮颜色
+        results.forEach(result => {
+          const cell = document.querySelector(`[data-index="${result.id}"]`);
+          if (cell) {
+            cell.classList.add('highlight');
+            cell.style.backgroundColor = '#ff6347'; // 番茄红颜色
+          }
+        });
+      }
+
+      showSuggestions(query) {
+        const suggestions = this.heatmapData
+          .filter(region => region.codes.some(code => code.includes(query)))
+          .map(region => region.codes.join(', '));
+        this.log(`建议: ${suggestions.join(', ')}`);
+      }
+
+      renderHeatmap() {
+        const heatmapContainer = document.getElementById('heatmap');
+        heatmapContainer.innerHTML = '';
+
+        this.heatmapData.forEach((region, index) => {
+          const cell = document.createElement('div');
+          cell.classList.add('cell');
+          cell.dataset.index = index;
+          cell.style.backgroundColor = this.getColorForRegion(region);
+
+          const productPreview = document.createElement('div');
+          productPreview.classList.add('product-preview');
+          productPreview.textContent = region.items.join(', ');
+          cell.appendChild(productPreview);
+
+          heatmapContainer.appendChild(cell);
+        });
+      }
+
+      updateColor(index) {
+        const cell = document.querySelector(`[data-index="${index}"]`);
+        if (cell) {
+          const region = this.heatmapData[index];
+          cell.style.backgroundColor = this.getColorForRegion(region);
+        }
+      }
+
+      getColorForRegion(region) {
+        const itemCount = region.items.length;
+        const colorValue = Math.min(255, itemCount * 30);
+        return `rgb(${colorValue}, ${255 - colorValue}, 150)`; // 原有颜色
+      }
+
+      loadData() {
+        const data = localStorage.getItem('heatmapData');
+        return data ? JSON.parse(data) : this.generateDefaultData();
+      }
+
+      generateDefaultData() {
+        return Array.from({ length: 20 }, (_, i) => ({
+          id: i,
+          codes: [`区域${i + 1}`],
+          items: []
+        }));
+      }
+
+      findRegion(regionId) {
+        return this.heatmapData.find(region => region.codes.includes(regionId));
+      }
+
+      validateInput(codeInput, item) {
+        if (!codeInput || !item) {
+          this.showError('输入不能为空', new Error('区域编号和物品名称都不能为空'));
+          return false;
+        }
+        return true;
+      }
+
+      updateCodes(index, newCodes) {
+        this.heatmapData[index].codes = newCodes;
+        this.saveToStorage();
+        this.renderHeatmap();
+      }
+
+      saveToStorage() {
+        localStorage.setItem('heatmapData', JSON.stringify(this.heatmapData));
+      }
+
+      clearInputs() {
+        document.getElementById('region').value = '';
+        document.getElementById('item').value = '';
+      }
+
+      showError(context, error) {
+        const msg = `${context}: ${error.message}`;
+        console.error(msg, error.stack);
+        alert(msg);
+        this.log(`ERROR: ${msg}`);
+      }
+
+      log(message) {
+        operationLog.push(`${new Date().toLocaleTimeString()}: ${message}`);
+        if (operationLog.length > MAX_LOG) operationLog.shift();
+        document.getElementById('operationLog').textContent = operationLog.join('\n');
+        console.log(`[OPERATION] ${message}`);
+      }
+    }
+
+    const app = new HeatmapSystem();
+  </script>
+</body>
+</html>
